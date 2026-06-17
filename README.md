@@ -2,6 +2,8 @@
 
 每 5 分钟轮询 [AI Hot](https://aihot.virxact.com) 精选 AI 新闻，增量推送到飞书/Lark 群聊。
 
+也可以作为 agent Skill 安装使用。安装后让 agent 触发 `$aihot-news`，它会按本仓库的固定流程引导用户配置 `config.sh`、手动测试、排查权限问题并设置 cron。
+
 ## 效果
 
 ```
@@ -66,6 +68,23 @@ crontab -e
 # */5 * * * * /path/to/aihot-news/cron-wrapper.sh
 ```
 
+## 作为 Skill 使用
+
+把本仓库作为 Skill 安装源交给支持 Skill 的 agent：
+
+```text
+请安装并使用这个 Skill：
+https://github.com/Manji-i/aihot-news
+```
+
+安装后可以这样触发：
+
+```text
+用 $aihot-news 帮我配置 AI Hot 轮询，推送到我的飞书群。
+```
+
+Skill 不会替你猜测配置。它会引导确认 `CHAT_ID`、`lark-cli` 登录状态、是否使用 lark-channel，以及 cron 在 macOS 下可能需要的权限。
+
 ## 配置文件说明
 
 `config.sh` 中的关键配置项：
@@ -90,6 +109,8 @@ aihot-news/
 ├── poll.sh              # 主脚本：拉取 → 格式化 → 发送
 ├── cron-wrapper.sh      # cron 入口：注入环境变量
 ├── config.sh.example    # 配置模板
+├── SKILL.md             # agent Skill 入口
+├── agents/openai.yaml   # Codex UI 元数据
 ├── config.sh            # 你的配置（gitignore，不提交）
 ├── state.json           # 游标（自动生成，不提交）
 ├── poll.log             # 运行日志（自动生成，不提交）

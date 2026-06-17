@@ -1,0 +1,7 @@
+interface:
+  display_name: "AI Hot News"
+  short_description: "配置 AI Hot 新闻轮询，并推送到 Lark/飞书群"
+  default_prompt: "Use $aihot-news to configure and test AI Hot news polling for my Lark chat."
+policy:
+  allow_implicit_invocation: true
+
