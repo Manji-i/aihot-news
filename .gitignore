@@ -1,0 +1,16 @@
+# 用户配置（含密钥路径等敏感信息）
+config.sh
+
+# 运行时状态
+state.json
+
+# 日志
+poll.log
+poll.log.*
+
+# macOS
+.DS_Store
+
+# 临时文件
+/tmp/aihot_items.*
+/tmp/aihot_sorted.*
