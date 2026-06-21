@@ -7,81 +7,119 @@ description: 当用户想要安装、配置、测试、排查故障或调度 AI 
 
 ## 本 Skill 做什么
 
-引导用户或其他 agent 把本仓库作为本地的 AI Hot 轮询任务运行。脚本会拉取新的 AI Hot 精选条目，按北京时间格式化后，通过 `lark-cli` 增量批量发送到飞书/Lark 群。
+引导用户把本 Skill 配套的脚本跑起来：每 5 分钟拉取 [AI Hot](https://aihot.virxact.com) 的精选条目，按北京时间格式化后，通过 `lark-cli` 增量发送到飞书/Lark 群。
 
-这本质上是一个 cron 式定时自动化任务，不是纯聊天总结型 Skill。不要自行编造新闻内容，一切以 API 和脚本输出为准。
+这是 cron 式定时自动化，不是聊天总结。不要自行编造新闻内容，一切以 API 和脚本输出为准。
 
-## 仓库结构
+## 关键约定：定位 Skill 目录
 
-假设 Skill 根目录即本仓库：
+本 Skill 的所有脚本都在 **SKILL.md 所在目录**。你（agent）执行命令时，一律用这个目录作为基准，不要假设它在 `/path/to/aihot-news` 或任何固定路径。先确定它：
+
+```bash
+SKILL_DIR="$(cd "$(dirname "${SKILL.md}")" && pwd)"
+```
+
+如果上面取不到，就用你加载本 Skill 时已知的安装路径。后续所有命令都在 `$SKILL_DIR` 下执行。
+
+## 目录内容
 
 ```text
-aihot-news/
-├── poll.sh
-├── cron-wrapper.sh
-├── config.sh.example
-├── README.md
-├── SKILL.md
-└── agents/openai.yaml
+$SKILL_DIR/
+├── SKILL.md             # 本文件
+├── poll.sh              # 主脚本：拉取 → 格式化 → 发送 → 更新游标
+├── cron-wrapper.sh      # cron 入口：加载 config.sh 并注入环境变量
+├── config.sh.example    # 配置模板
+└── agents/openai.yaml   # Codex UI 元数据
 ```
 
-运行时文件默认生成在脚本同级目录（除非另行配置）：`config.sh`、`state.json`、`poll.log`。
+运行时还会自动生成（已 gitignore，不要提交）：`config.sh`、`state.json`、`poll.log`。
 
-## 配置流程
+## 执行流程
 
-1. 确认仓库已存在并进入目录。
+按顺序执行，每一步都需要时停下来和用户确认。
+
+### 1. 检查前置依赖
+
+逐个检查，缺哪个报哪个。**未经用户同意不要全局安装任何东西。**
 
 ```bash
-cd /path/to/aihot-news
+command -v bash python3 curl lark-cli
 ```
 
-2. 检查前置依赖，未经用户同意不要全局安装任何东西。
+- `lark-cli` 缺失：告诉用户需要先安装并登录飞书/Lark（这是账号授权操作，你替不了，让用户自己做）。
+- 其余缺失：报给用户，按用户指示补。
+
+### 2. 创建配置文件
+
+仅当 `config.sh` 不存在时才创建，**不要覆盖已有的**：
 
 ```bash
-command -v bash
-command -v python3
-command -v curl
-command -v lark-cli
+cd "$SKILL_DIR"
+[ -f config.sh ] || cp config.sh.example config.sh
 ```
 
-3. 仅当 `config.sh` 不存在时才创建。
+### 3. 引导用户填写 config.sh
+
+打开 `config.sh` 给用户看需要填的字段，**不要替用户猜值**，逐项确认：
+
+| 字段 | 必填 | 怎么定 |
+|------|------|--------|
+| `CHAT_ID` | ✅ | 用下方「获取 CHAT_ID」方法查；查不到就问用户要 |
+| `LARK_CHANNEL` | 用 lark-channel 时必填 | 问用户是否用 lark-channel bridge；是则填 `1` |
+| `LARK_CHANNEL_HOME` / `LARK_CHANNEL_PROFILE` / `LARKSUITE_CLI_CONFIG_DIR` | 同上 | 用户用 lark-channel 时，帮用户查本机实际路径填入 |
+| `API_BASE` | 否 | 默认 `https://aihot.virxact.com`，一般不用改 |
+| `MAX_PER_MESSAGE` / `PAGE_SIZE` | 否 | 默认 3 / 50，用户无特殊需求不动 |
+| `STATE_FILE` / `POLL_LOG` | 否 | 默认放 `$SKILL_DIR` 下，用户无特殊需求不动 |
+
+**不用 lark-channel 的情况**：告诉用户把 `LARK_CHANNEL`、`LARK_CHANNEL_HOME`、`LARK_CHANNEL_PROFILE`、`LARKSUITE_CLI_CONFIG_DIR` 四行注释掉，用本机普通 `lark-cli` 配置即可。
+
+**安全**：不要把 `config.sh` 内容、token、profile 路径打印回聊天。
+
+### 4. 给脚本执行权限并校验
 
 ```bash
-cp config.sh.example config.sh
-```
-
-不要打印或提交 `config.sh`。引导用户设置：
-
-- `CHAT_ID`：目标飞书/Lark 群的 chat_id。
-- `LARK_CHANNEL`、`LARK_CHANNEL_HOME`、`LARK_CHANNEL_PROFILE`、`LARKSUITE_CLI_CONFIG_DIR`：仅在使用 lark-channel bridge 模式时填写。
-- `API_BASE`：默认 `https://aihot.virxact.com`。
-- `MAX_PER_MESSAGE` 和 `PAGE_SIZE`：可选的发送控制项。
-- `STATE_FILE` 和 `POLL_LOG`：可选的自定义运行时路径。
-
-如果用户不使用 lark-channel，告诉对方注释掉所有 `LARK_CHANNEL*` 和 `LARKSUITE_CLI_CONFIG_DIR` 行，使用本机普通的 `lark-cli` 配置即可。
-
-4. 如有必要给脚本加执行权限。
-
-```bash
+cd "$SKILL_DIR"
 chmod +x poll.sh cron-wrapper.sh
-```
-
-5. 校验 shell 语法。
-
-```bash
 bash -n poll.sh cron-wrapper.sh
 ```
 
-6. 排程前先手动测试一次。
+语法报错就修脚本，不要绕过。
+
+### 5. 手动测试一次
 
 ```bash
+cd "$SKILL_DIR"
 ./cron-wrapper.sh
 tail -n 50 poll.log
 ```
 
-成功的标志是出现「无新增。」，或先有发送消息日志、最后出现「完成。」。如果首次运行就发送了一批旧条目，说明 `state.json` 默认从一小时前开始；只有在用户同意后才调整 `STATE_FILE` 或 `state.json`。
+**判断成功**：
+- 日志出现「无新增。」→ 正常，说明流程跑通了，只是当前没有新内容。
+- 日志出现发送消息记录后跟「完成。」→ 正常，已推送。
 
-## 获取 `CHAT_ID`
+**首次运行可能推一批旧条目**：因为 `state.json` 默认从一小时前开始。这不算故障；只有用户明确想调起点时，才在征得同意后改 `state.json` 里的 `last_published_at`。
+
+**报错处理**：见下方「故障排查」。
+
+### 6. 配置 cron 定时
+
+手动测试成功后再排程。帮用户把这一行加进 crontab（路径替换成实际的 `$SKILL_DIR`）：
+
+```cron
+*/5 * * * * /实际路径/cron-wrapper.sh
+```
+
+加的方法：
+
+```bash
+( crontab -l 2>/dev/null; echo "*/5 * * * * $SKILL_DIR/cron-wrapper.sh" ) | crontab -
+```
+
+加完后 `crontab -l` 确认。
+
+**macOS 权限提醒**：如果 cron 跑出 `Operation not permitted`，是 `/usr/sbin/cron` 没有全磁盘访问权限——告诉用户去「系统设置 → 隐私与安全性 → 全磁盘访问」加 `/usr/sbin/cron`，或把 Skill 目录移到 cron 能访问的位置（如 `~/.local/share/aihot-news`）。**不要替用户改系统隐私设置。**
+
+## 获取 CHAT_ID
 
 优先用对用户环境影响最小的方式：
 
@@ -89,30 +127,23 @@ tail -n 50 poll.log
 lark-cli im +messages-list-recent
 ```
 
-如果看不到目标群，请用户提供群聊 ID，或请求授权查看最近的 Lark 消息。不要主动给随机群聊发私信或测试消息。
-
-## 用 cron 排程
-
-手动测试成功后，建议添加：
-
-```cron
-*/5 * * * * /path/to/aihot-news/cron-wrapper.sh
-```
-
-在 macOS 上，优先把仓库放到 cron 能访问的位置，例如 `~/.local/share/aihot-news`。如果 cron 日志出现 `Operation not permitted`，说明 `/usr/sbin/cron` 需要全磁盘访问权限，或仓库需要移到可访问位置。未经用户操作或明确授权，不要改动系统隐私设置。
+从输出里找目标群的 chat_id。找不到就问用户要，**不要主动给随机群发测试消息**。
 
 ## 故障排查
 
-- `keychain Get failed`：cron 无法访问 macOS Keychain。引导用户按所用 lark-cli 版本执行 keychain/文件 token 降级配置。
-- `command not found: lark-cli`：在 `cron-wrapper.sh` 的 `PATH` 里加入 lark-cli 所在目录，或经用户同意后安装 lark-cli。
-- `API 响应异常`：检查 `API_BASE`、网络连通性，以及 `poll.log` 里的前 200 字符响应。
-- 没有消息发出：检查 `state.json`；脚本只发送比 `last_published_at` 更新的条目。
-- 消息重复：检查是否存在多条 crontab 记录、或多份仓库副本用了不同 `STATE_FILE` 路径同时运行。
-- lark-channel bound 模式报错：不要 unset bridge 变量、不要切回普通 profile。请用户重启 bridge 或运行 bridge doctor/preflight。
+| 症状 | 原因 | 处理 |
+|------|------|------|
+| `keychain Get failed` | cron 无法访问 macOS Keychain | 引导用户按其 lark-cli 版本执行 keychain/文件 token 降级（账号相关，用户自己做） |
+| `command not found: lark-cli` | cron 的 PATH 找不到 lark-cli | 在 `cron-wrapper.sh` 的 `PATH` 里加入 lark-cli 所在目录 |
+| `API 响应异常` | API_BASE 错 / 没网 | 看 `poll.log` 里前 200 字符响应，检查 `API_BASE` 和网络 |
+| 一直没消息发出 | 游标太新 | 检查 `state.json` 的 `last_published_at`，脚本只发比它新的条目 |
+| 消息重复 | 多实例并跑 | 查是否有多条 crontab 或多份副本用了不同 `STATE_FILE` |
+| lark-channel bound 报错 | bridge 状态异常 | **不要** unset bridge 变量、**不要**切普通 profile；让用户重启 bridge 或跑 bridge doctor/preflight |
 
 ## 安全规则
 
 - 永远不要提交 `config.sh`、`state.json`、`poll.log`。
-- 永远不要在聊天里打印 token、含密钥的私有 profile 路径或完整配置文件。
-- 发送消息默认用 `--as bot`，除非用户明确要求以用户身份发送。
-- 未经询问不要删除运行时状态或日志；否则可能造成通知重放或丢失排查证据。
+- 永远不要在聊天里打印 token、含密钥的 profile 路径或完整 `config.sh`。
+- 发消息默认 `--as bot`，除非用户明确要求以用户身份发送。
+- 未经询问不要删除 `state.json` 或 `poll.log`——删了可能造成通知重放或丢失排查证据。
+- 账号授权、系统权限、全局安装这三类操作替不了用户，只能给步骤。
