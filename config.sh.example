@@ -8,18 +8,8 @@
 # 目标群聊的 chat_id（从飞书开发者后台或 lark-cli 获取）
 CHAT_ID="oc_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
-# ---- lark-channel / lark-cli 环境（cron 运行时需要） ----
-# 是否启用 lark-channel bridge 模式（是则设为 1，否则留空）
-LARK_CHANNEL=1
-# lark-channel 安装目录
-LARK_CHANNEL_HOME="/Users/yourname/.lark-channel"
-# lark-channel profile 名称
-LARK_CHANNEL_PROFILE="default"
-# lark-cli 私有配置目录（通常为 $LARK_CHANNEL_HOME/profiles/$LARK_CHANNEL_PROFILE/lark-cli）
-LARKSUITE_CLI_CONFIG_DIR="/Users/yourname/.lark-channel/profiles/default/lark-cli"
-
-# 如果你不使用 lark-channel，只用独立 lark-cli，请将上面 4 行全部注释掉，
-# 并确保 lark-cli 在你的 PATH 中且已登录。
+# cron 使用你本机已登录的 lark-cli。请先确认 lark-cli 在 PATH 中可用，
+# 并且目标机器人已加入 CHAT_ID 对应的群聊。
 
 # ---- API 数据源 ----
 API_BASE="https://aihot.virxact.com"
