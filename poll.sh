@@ -16,8 +16,14 @@ fi
 # 默认值：状态文件和日志放在脚本目录下
 STATE_FILE="${STATE_FILE:-$SCRIPT_DIR/state.json}"
 LOG_FILE="${POLL_LOG:-$SCRIPT_DIR/poll.log}"
+API_BASE="${API_BASE:-https://aihot.virxact.com}"
+MAX_PER_MESSAGE="${MAX_PER_MESSAGE:-3}"
+PAGE_SIZE="${PAGE_SIZE:-50}"
+LOOKBACK_HOURS="${LOOKBACK_HOURS:-12}"
+MAX_SENT_IDS="${MAX_SENT_IDS:-1000}"
+DRY_RUN="${AIHOT_DRY_RUN:-0}"
 
-UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36 aihot-news/0.2.0"
+UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36 aihot-news/0.3.0"
 
 # macOS mktemp 要求 X 必须在模板末尾才会替换；trap 确保异常退出也清理
 cleanup() {
@@ -32,20 +38,20 @@ if [[ -f "$STATE_FILE" ]]; then
     last_published=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('last_published_at',''))")
 else
     last_published=$(date -u -v-1H '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d '1 hour ago' '+%Y-%m-%dT%H:%M:%SZ')
-    echo "{\"last_published_at\":\"$last_published\"}" > "$STATE_FILE"
+    echo "{\"last_published_at\":\"$last_published\",\"sent_item_ids\":[]}" > "$STATE_FILE"
     log "首次运行，起点: $last_published"
 fi
 
-# since 是 >= 语义，加 1ms 避免重复拉回边界条目
-last_published=$(python3 -c "
-import sys
+# AI HOT 的 selected 会后补较早 publishedAt 的条目；公开 API 契约要求窗口查询 + 去重。
+since_published=$(python3 -c "
 ts = '$last_published'
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-dt = dt + timedelta(milliseconds=1)
+dt = dt - timedelta(hours=$LOOKBACK_HOURS)
 print(dt.strftime('%Y-%m-%dT%H:%M:%S.') + f'{dt.microsecond // 1000:03d}Z')
 ")
-since_encoded=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$last_published', safe=''))")
+since_encoded=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$since_published', safe=''))")
+log "查询窗口: since=$since_published, last_published_at=$last_published"
 
 # ---- 2. 拉取 API ----
 all_items_json=$(mktemp /tmp/aihot_items.XXXXXXXXXX)
@@ -89,24 +95,50 @@ for item in json.load(sys.stdin)['items']:
     sleep 0.5
 done
 
-# ---- 3. 检查是否有新条目 ----
-total=$(wc -l < "$all_items_json" | tr -d ' ')
+# ---- 3. 过滤已发送条目，并按 publishedAt 升序 ----
+sorted_json=$(mktemp /tmp/aihot_sorted.XXXXXXXXXX)
+python3 - "$STATE_FILE" "$all_items_json" "$sorted_json" <<'PY_STATE_FILTER'
+import json
+import sys
+
+state_file, all_items_file, sorted_file = sys.argv[1:4]
+try:
+    with open(state_file) as f:
+        state = json.load(f)
+except FileNotFoundError:
+    state = {}
+
+sent_ids = set(state.get("sent_item_ids") or [])
+items = []
+with open(all_items_file) as f:
+    for line in f:
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        if item.get("id") in sent_ids:
+            continue
+        items.append(item)
+
+items.sort(key=lambda d: (d.get("publishedAt") or "", d.get("id") or ""))
+with open(sorted_file, "w") as f:
+    for item in items:
+        f.write(json.dumps(item, ensure_ascii=False) + "\n")
+PY_STATE_FILTER
+
+total=$(wc -l < "$sorted_json" | tr -d ' ')
 if [[ "$total" -eq 0 ]]; then
     log "无新增。"
-    rm -f "$all_items_json"
+    rm -f "$all_items_json" "$sorted_json"
     exit 0
 fi
 
 log "共 ${total} 条新增。"
 
-# 按 publishedAt 升序
-sorted_json=$(mktemp /tmp/aihot_sorted.XXXXXXXXXX)
-sort -t'"' -k4 "$all_items_json" > "$sorted_json"
-
 # ---- 4. 格式化并发送 ----
 batch=""
 batch_count=0
 newest_ts=""
+sent_ids_batch=""
 
 while IFS= read -r line; do
     item=$(echo "$line" | python3 -c "
@@ -121,7 +153,7 @@ dt = datetime.fromisoformat(ts_str.replace('Z','+00:00'))
 bj_dt = dt.astimezone(bj)
 time_prefix = f'{bj_dt.month}月{bj_dt.day}日 {bj_dt.hour:02d}:{bj_dt.minute:02d}'
 
-s = d.get('summary','')
+s = d.get('summary','') or ''
 short_s = s[:120] + ('…' if len(s) > 120 else '')
 print(json.dumps({
     'title': d.get('title',''),
@@ -141,8 +173,11 @@ print(json.dumps({
     url=$(echo "$item" | python3 -c "import sys,json; print(json.load(sys.stdin)['url'])")
     ts=$(echo "$item" | python3 -c "import sys,json; print(json.load(sys.stdin)['ts'])")
     time_prefix=$(echo "$item" | python3 -c "import sys,json; print(json.load(sys.stdin)['time_prefix'])")
+    item_id=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
     newest_ts="$ts"
+    sent_ids_batch="${sent_ids_batch}${item_id}
+"
 
     entry="🔹（${time_prefix}）${title}
 📂 ${cat} · ${source}
@@ -160,7 +195,11 @@ ${entry}"
 
     if [[ $batch_count -ge $MAX_PER_MESSAGE ]]; then
         log "发送 ${batch_count} 条…"
-        lark-cli im +messages-send --chat-id "$CHAT_ID" --text "$batch" --as bot >> "$LOG_FILE" 2>&1
+        if [[ "$DRY_RUN" == "1" ]]; then
+            log "DRY_RUN: 跳过发送 ${batch_count} 条。"
+        else
+            lark-cli im +messages-send --chat-id "$CHAT_ID" --text "$batch" --as bot >> "$LOG_FILE" 2>&1
+        fi
         sleep 0.5
         batch=""
         batch_count=0
@@ -169,12 +208,55 @@ done < "$sorted_json"
 
 if [[ $batch_count -gt 0 ]]; then
     log "发送最后 ${batch_count} 条…"
-    lark-cli im +messages-send --chat-id "$CHAT_ID" --text "$batch" --as bot >> "$LOG_FILE" 2>&1
+    if [[ "$DRY_RUN" == "1" ]]; then
+        log "DRY_RUN: 跳过发送最后 ${batch_count} 条。"
+    else
+        lark-cli im +messages-send --chat-id "$CHAT_ID" --text "$batch" --as bot >> "$LOG_FILE" 2>&1
+    fi
 fi
 
 # ---- 5. 更新状态 ----
 if [[ -n "$newest_ts" ]]; then
-    echo "{\"last_published_at\":\"$newest_ts\"}" > "$STATE_FILE"
+    if [[ "$DRY_RUN" == "1" ]]; then
+        log "DRY_RUN: 跳过状态更新: $newest_ts"
+        rm -f "$all_items_json" "$sorted_json"
+        log "完成。"
+        exit 0
+    fi
+    python3 - "$STATE_FILE" "$newest_ts" "$MAX_SENT_IDS" <<PY_STATE_UPDATE
+import json
+import sys
+from datetime import datetime, timezone
+
+state_file, newest_ts, max_sent_ids = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    with open(state_file) as f:
+        state = json.load(f)
+except FileNotFoundError:
+    state = {}
+
+def parse(ts):
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+old_ts = state.get("last_published_at")
+if old_ts:
+    state["last_published_at"] = max(old_ts, newest_ts, key=parse)
+else:
+    state["last_published_at"] = newest_ts
+
+sent_ids = list(state.get("sent_item_ids") or [])
+seen = set(sent_ids)
+for item_id in """$sent_ids_batch""".splitlines():
+    if item_id and item_id not in seen:
+        sent_ids.append(item_id)
+        seen.add(item_id)
+state["sent_item_ids"] = sent_ids[-max_sent_ids:]
+state["sent_item_ids_updated_at"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+with open(state_file, "w") as f:
+    json.dump(state, f, ensure_ascii=False, separators=(",", ":"))
+    f.write("\n")
+PY_STATE_UPDATE
     log "状态更新: $newest_ts"
 fi
 

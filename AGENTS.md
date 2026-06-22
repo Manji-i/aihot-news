@@ -8,7 +8,7 @@
 
 - `SKILL.md`：面向 agent 的 Skill 指令。
 - `agents/openai.yaml`：Skill 的 Codex UI 元数据。
-- `poll.sh`：主脚本，负责轮询、格式化、发送和状态更新。
+- `poll.sh`：主脚本，负责窗口回看、ID 去重、格式化、发送和状态更新。
 - `cron-wrapper.sh`：cron 入口，加载 `config.sh` 并设置运行时环境。
 - `config.sh.example`：安全的配置模板。
 - `README.md`：面向人类用户的使用说明。
@@ -16,7 +16,7 @@
 以下运行时文件刻意只保留在本地：
 
 - `config.sh`
-- `state.json`
+- `state.json`（保存 `last_published_at` 和 `sent_item_ids`）
 - `poll.log`
 - `poll.log.*`
 

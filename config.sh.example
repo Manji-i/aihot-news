@@ -19,6 +19,10 @@ API_BASE="https://aihot.virxact.com"
 MAX_PER_MESSAGE=3
 # 每页拉取条数
 PAGE_SIZE=50
+# 回看窗口小时数：AI Hot 精选可能后补较早发布时间的条目，脚本会回看并用 ID 去重
+LOOKBACK_HOURS=12
+# 保留多少个已发送条目 ID 用于去重
+MAX_SENT_IDS=1000
 
 # ---- 路径（可留空，默认使用脚本所在目录） ----
 # STATE_FILE="/path/to/state.json"
